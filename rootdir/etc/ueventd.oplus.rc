@@ -4,5 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
+# Charging
+/sys/class/power_supply/*  mmi_charging_enable    0660    system  system
+
 # WiFi
 firmware_directories /odm/etc/wifi/

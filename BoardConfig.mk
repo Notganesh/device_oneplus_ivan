@@ -118,6 +118,9 @@ BOARD_MKBOOTIMG_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
 TARGET_INIT_VENDOR_LIB ?= //$(DEVICE_PATH):init_ivan
 TARGET_RECOVERY_DEVICE_MODULES ?= init_ivan
 
+# Lineage Health
+TARGET_HEALTH_CHARGING_CONTROL_CHARGING_PATH := /sys/class/power_supply/battery/mmi_charging_enable
+
 # Metadata
 BOARD_USES_METADATA_PARTITION := true
 BOARD_ROOT_EXTRA_FOLDERS += metadata
