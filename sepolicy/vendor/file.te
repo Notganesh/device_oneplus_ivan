@@ -62,3 +62,6 @@ type vendor_sysfs_gpu, fs_type, sysfs_type;
 
 # Touch gesture
 type sysfs_touchgesture, sysfs_type, fs_type;
+
+#FW
+type proc_fastchg_fw, fs_type, proc_type;
