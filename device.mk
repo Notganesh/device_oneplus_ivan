@@ -128,6 +128,10 @@ PRODUCT_BUILD_SUPER_PARTITION := false
 PRODUCT_PACKAGES += \
     fastbootd
 
+# Doze
+PRODUCT_PACKAGES += \
+    OplusDoze
+
 # Gatekeeper
 PRODUCT_PACKAGES += \
     android.hardware.gatekeeper@1.0-service \
@@ -426,8 +430,7 @@ PRODUCT_AAPT_PREF_CONFIG := xxxhdpi
 PRODUCT_SOONG_NAMESPACES += \
     $(DEVICE_PATH) \
     hardware/mediatek \
-    hardware/mediatek/libmtkperf_client \
-    hardware/oplus
+    hardware/mediatek/libmtkperf_client
 
 # Thermal
 PRODUCT_PACKAGES += \
