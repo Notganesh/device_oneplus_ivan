@@ -388,6 +388,10 @@ PRODUCT_PACKAGES += \
     ueventd.mtk.rc \
     ueventd.oplus.rc \
 
+# Remove unwanted packages
+PRODUCT_PACKAGES += \
+    RemovePackages
+
 # Fastboot
 PRODUCT_PACKAGES += \
     init.recovery.mt6877.rc
