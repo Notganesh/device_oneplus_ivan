@@ -6874,10 +6874,3 @@ vendor/lib64/vendor.mediatek.hardware.nvram@1.0.so
 vendor/lib64/vendor.mediatek.hardware.nvram@1.1.so
 vendor/lib64/vendor.mediatek.hardware.nwk_opt@1.0.so
 vendor/priv-app/GpuGameDriver.mt6877/GpuGameDriver.mt6877.apk
-vendor/res/images/lcd_test_00.png
-vendor/res/images/lcd_test_01.png
-vendor/res/images/lcd_test_02.png
-vendor/res/sound/ringtone.wav
-vendor/res/sound/testpattern1.wav
-vendor/ro.prop
-vendor/rw.prop
