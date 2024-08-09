@@ -14,134 +14,156 @@
  * limitations under the License.
  */
 
-#include <android-base/properties.h>
+#include "AsyncScreenCaptureListener.h"
+
+#include <android-base/file.h>
 #include <binder/ProcessState.h>
-#include <gui/LayerState.h>
 #include <gui/SurfaceComposerClient.h>
 #include <gui/SyncScreenCaptureListener.h>
 #include <ui/DisplayState.h>
 
 #include <cstdio>
+#include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
+#include <time.h>
 #include <unistd.h>
-#include <sysutils/FrameworkCommand.h>
-#include <sysutils/FrameworkListener.h>
-#include <utils/Timers.h>
 
-using android::base::SetProperty;
-using android::ui::Rotation;
-using android::ui::DisplayState;
+using android::AsyncScreenCaptureListener;
+using android::DisplayCaptureArgs;
 using android::GraphicBuffer;
+using android::IBinder;
 using android::Rect;
 using android::ScreenshotClient;
 using android::sp;
 using android::SurfaceComposerClient;
-using namespace android;
+using android::base::WriteStringToFile;
+using android::gui::ScreenCaptureResults;
+using android::ui::DisplayState;
+using android::ui::PixelFormat;
 
-constexpr int ALS_POS_X = 610;
-constexpr int ALS_POS_Y = 40;
+#define ALS_COLOR_PATH "/sys/kernel/pix_manager/als_color"
+
 constexpr int ALS_RADIUS = 64;
+constexpr int ALS_POS_X = 651;
+constexpr int ALS_POS_Y = 87;
+constexpr int SCREENSHOT_INTERVAL = 1;
 
-static sp<IBinder> getInternalDisplayToken() { 
-	const auto displayIds = SurfaceComposerClient::getPhysicalDisplayIds(); 
-	sp<IBinder> token = SurfaceComposerClient::getPhysicalDisplayToken(displayIds[0]); 
-	return token;
+// See frameworks/base/services/core/jni/com_android_server_display_DisplayControl.cpp and
+// frameworks/base/core/java/android/view/SurfaceControl.java
+static sp<IBinder> getInternalDisplayToken() {
+    const auto displayIds = SurfaceComposerClient::getPhysicalDisplayIds();
+    sp<IBinder> token = SurfaceComposerClient::getPhysicalDisplayToken(displayIds[0]);
+    return token;
 }
 
-static Rect screenshot_rect_0(ALS_POS_X - ALS_RADIUS, ALS_POS_Y - ALS_RADIUS, ALS_POS_X + ALS_RADIUS, ALS_POS_Y + ALS_RADIUS);
-static Rect screenshot_rect_land_90(ALS_POS_Y - ALS_RADIUS, 1080 - ALS_POS_X - ALS_RADIUS, ALS_POS_Y + ALS_RADIUS, 1080 - ALS_POS_X + ALS_RADIUS);
-static Rect screenshot_rect_180(1080-ALS_POS_X - ALS_RADIUS, 2400-ALS_POS_Y - ALS_RADIUS, 1080-ALS_POS_X + ALS_RADIUS, 2400-ALS_POS_Y + ALS_RADIUS);
-static Rect screenshot_rect_land_270(2400 - (ALS_POS_Y + ALS_RADIUS),ALS_POS_X - ALS_RADIUS, 2400 - (ALS_POS_Y - ALS_RADIUS), ALS_POS_X + ALS_RADIUS);
+void updateScreenBuffer() {
+    static time_t lastScreenUpdate = 0;
+    static sp<GraphicBuffer> outBuffer = new GraphicBuffer(
+            10, 10, android::PIXEL_FORMAT_RGB_888,
+            GraphicBuffer::USAGE_SW_READ_OFTEN | GraphicBuffer::USAGE_SW_WRITE_OFTEN);
 
-class TakeScreenshotCommand : public FrameworkCommand {
-  public:
-    TakeScreenshotCommand() : FrameworkCommand("take_screenshot") {}
-    ~TakeScreenshotCommand() override = default;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
-    int runCommand(SocketClient* cli, int /*argc*/, char **/*argv*/) {
-        auto screenshot = takeScreenshot();
-        cli->sendData(&screenshot, sizeof(screenshot_t));
-        return 0;
+    if (now.tv_sec - lastScreenUpdate < SCREENSHOT_INTERVAL) {
+        ALOGV("Update skipped because interval not expired at %ld", now.tv_sec);
+        return;
     }
-  private:
-    struct screenshot_t {
-        uint32_t r, g, b;
-        nsecs_t timestamp;
-    };
 
-    screenshot_t takeScreenshot() {
-        sp<IBinder> display = getInternalDisplayToken();
+    sp<IBinder> display = getInternalDisplayToken();
 
-        android::ui::DisplayState state;
-        SurfaceComposerClient::getDisplayState(display, &state);
-        Rect screenshot_rect;
-        switch (state.orientation) {
-             case Rotation::Rotation90:  screenshot_rect = screenshot_rect_land_90;
-                                         break;
-             case Rotation::Rotation180: screenshot_rect = screenshot_rect_180;
-                                         break;
-             case Rotation::Rotation270: screenshot_rect = screenshot_rect_land_270;
-                                         break;
-             default:                    screenshot_rect = screenshot_rect_0;
-                                         break;
-        }
+    DisplayCaptureArgs captureArgs;
+    captureArgs.displayToken = getInternalDisplayToken();
+    captureArgs.pixelFormat = PixelFormat::RGBA_8888;
+    captureArgs.sourceCrop = Rect(
+            ALS_POS_X - ALS_RADIUS, ALS_POS_Y - ALS_RADIUS,
+            ALS_POS_X + ALS_RADIUS, ALS_POS_Y + ALS_RADIUS);
+    captureArgs.width = ALS_RADIUS * 2;
+    captureArgs.height = ALS_RADIUS * 2;
+    captureArgs.captureSecureLayers = true;
 
-        sp<SyncScreenCaptureListener> captureListener = new SyncScreenCaptureListener();
-        gui::ScreenCaptureResults captureResults;
+    DisplayState state;
+    SurfaceComposerClient::getDisplayState(display, &state);
 
-        static sp<GraphicBuffer> outBuffer = new GraphicBuffer(
-        screenshot_rect.getWidth(), screenshot_rect.getHeight(),
-        android::PIXEL_FORMAT_RGB_888,
-        GraphicBuffer::USAGE_SW_READ_OFTEN | GraphicBuffer::USAGE_SW_WRITE_OFTEN);
+    sp<AsyncScreenCaptureListener> captureListener = new AsyncScreenCaptureListener(
+        [](const ScreenCaptureResults& captureResults) {
+            ALOGV("Capture results received");
 
-        DisplayCaptureArgs captureArgs;
-        captureArgs.displayToken = display;
-        captureArgs.pixelFormat = android::ui::PixelFormat::RGBA_8888;
+            uint8_t *out;
+            auto resultWidth = outBuffer->getWidth();
+            auto resultHeight = outBuffer->getHeight();
+            auto stride = outBuffer->getStride();
 
-        captureArgs.sourceCrop = screenshot_rect;
-        captureArgs.width = screenshot_rect.getWidth();
-        captureArgs.height = screenshot_rect.getHeight();
-        //captureArgs.useIdentityTransform = false;
-        status_t ret = ScreenshotClient::captureDisplay(captureArgs, captureListener);
-
-        uint8_t *out;
-        auto resultWidth = outBuffer->getWidth();
-        auto resultHeight = outBuffer->getHeight();
-        auto stride = outBuffer->getStride();
-
-        outBuffer->lock(GraphicBuffer::USAGE_SW_READ_OFTEN, reinterpret_cast<void **>(&out));
-        // we can sum this directly on linear light
-        uint32_t rsum = 0, gsum = 0, bsum = 0;
-        for (int y = 0; y < resultHeight; y++) {
-            for (int x = 0; x < resultWidth; x++) {
-                rsum += out[y * (stride * 4) + x * 4];
-                gsum += out[y * (stride * 4) + x * 4 + 1];
-                bsum += out[y * (stride * 4) + x * 4 + 2];
+            captureResults.buffer->lock(GraphicBuffer::USAGE_SW_READ_OFTEN, reinterpret_cast<void **>(&out));
+            // we can sum this directly on linear light
+            uint32_t rsum = 0, gsum = 0, bsum = 0;
+            for (int y = 0; y < resultHeight; y++) {
+                for (int x = 0; x < resultWidth; x++) {
+                    rsum += out[y * (stride * 4) + x * 4];
+                    gsum += out[y * (stride * 4) + x * 4 + 1];
+                    bsum += out[y * (stride * 4) + x * 4 + 2];
+                }
             }
-        }
-        uint32_t max = resultWidth * resultHeight;
-        outBuffer->unlock();
+            uint32_t max = resultWidth * resultHeight;
+            WriteStringToFile("A:255R:" + std::to_string(rsum / max) +
+                "G:" + std::to_string(gsum / max) +
+                "B:" + std::to_string(bsum / max), ALS_COLOR_PATH);
+            captureResults.buffer->unlock();
+        }, 500);
 
-        return { rsum / max, gsum / max, bsum / max, systemTime(SYSTEM_TIME_BOOTTIME) };
-    }
-};
+    ScreenshotClient::captureDisplay(captureArgs, captureListener);
+    ALOGV("Capture started at %ld", now.tv_sec);
 
-class AlsCorrectionListener : public FrameworkListener {
-  public:
-    AlsCorrectionListener() : FrameworkListener("als_correction") {
-        registerCmd(new TakeScreenshotCommand);
+    lastScreenUpdate = now.tv_sec;
+}
+
+static bool dummyRead(int fd) {
+    char c;
+    int rc;
+
+    rc = lseek(fd, 0, SEEK_SET);
+    if (rc) {
+        ALOGE("failed to seek fd, err: %d", rc);
+        return false;
     }
-};
+
+    rc = read(fd, &c, sizeof(char));
+    if (rc != 1) {
+        ALOGE("failed to read bool from fd, err: %d", rc);
+        return false;
+    }
+
+    return c == 'A';
+}
 
 int main() {
-    ProcessState::self()->setThreadPoolMaxThreadCount(0);
-    ProcessState::self()->startThreadPool();
+    android::ProcessState::self()->setThreadPoolMaxThreadCount(0);
+    android::ProcessState::self()->startThreadPool();
 
-    auto listener = new AlsCorrectionListener();
-    listener->startListener();
+    int fd = open(ALS_COLOR_PATH, O_RDONLY);
+    if (fd < 0) {
+        ALOGE("failed to open fd, err: %d", fd);
+        return fd;
+    }
+
+    struct pollfd alsColorPoll = {
+        .fd = fd,
+        .events = POLLERR | POLLPRI,
+        .revents = 0,
+    };
 
     while (true) {
-        pause();
+        if (!dummyRead(fd))
+            return -1;
+
+        int rc = poll(&alsColorPoll, 1, -1);
+        if (rc < 0) {
+            ALOGE("failed to poll fd, err: %d", rc);
+            continue;
+        }
+
+        updateScreenBuffer();
     }
 
     return 0;
